@@ -37,7 +37,7 @@ class MergeGroup():
                 # print("Processing:", row)
 
                 label = row['label']
-                input_img_filename = os.path.join(self.mount_dir, row['img_fn'])
+                input_img_filename = os.path.join(self.mount_dir, row['img'])
                     
                 img = sitk.ReadImage(input_img_filename)
 
@@ -51,8 +51,8 @@ class MergeGroup():
 
                 out_np[resampled_img_np > 0] = (resampled_img_np*(label))[resampled_img_np > 0]
 
-                mean = row[args.mean]
-                std = row[args.std]
+                mean = np.abs(row[args.mean])
+                std = np.abs(row[args.std])
 
                 out_diffusor_np[resampled_img_np > 0] = (np.clip(np.random.normal(loc=mean, scale=std, size=out_np.shape), a_min=args.a_min, a_max=args.a_max))[resampled_img_np > 0]          
 
@@ -70,51 +70,53 @@ class MergeGroup():
             sitk.WriteImage(out_diffusor_img, out_diffusor_fn)
 
 
-def merge_groups(args, output_size, output_spacing, output_origin, out_dir):
+def merge_groups(args, output_size, output_spacing, output_origin, out_dir):    
+
+    output_img_diffusor_fn = os.path.normpath(out_dir) + "_diffusor.nrrd"
+
+    if args.ow or not os.path.exists(output_img_diffusor_fn):
     
-    output_img_fn = os.path.splitext(os.path.normpath(args.csv))[0] + ".nrrd"
-    out_np = np.zeros(output_size, dtype=np.ushort)
+        output_img_fn = os.path.normpath(out_dir) + ".nrrd"
+        out_np = np.zeros(output_size, dtype=np.ushort)
+        out_diffusor_np = np.random.normal(loc=args.b_mean, scale=args.b_std, size=output_size)
 
-    output_img_diffusor_fn = os.path.splitext(os.path.normpath(args.csv))[0] + "_diffusor.nrrd"    
-    out_diffusor_np = np.random.normal(loc=args.b_mean, scale=args.b_std, size=output_size)
+        print("Merging groups...")
 
-    print("Merging groups...")
+        for g_name in args.group_order:
 
-    for g_name in args.group_order:
+            print(g_name)
+            g_image_fn = os.path.join(out_dir, g_name + ".nrrd")
+            g_img_np = sitk.GetArrayFromImage(sitk.ReadImage(g_image_fn))
 
-        print(g_name)
-        g_image_fn = os.path.join(out_dir, g_name + ".nrrd")
-        g_img_np = sitk.GetArrayFromImage(sitk.ReadImage(g_image_fn))
+            out_np[g_img_np > 0] = g_img_np[g_img_np > 0]
 
-        out_np[g_img_np > 0] = g_img_np[g_img_np > 0]
+            g_image_diffusor_fn = os.path.join(out_dir, g_name + "_diffusor.nrrd")
+            g_img_diffusor_np = sitk.GetArrayFromImage(sitk.ReadImage(g_image_diffusor_fn))
 
-        g_image_diffusor_fn = os.path.join(out_dir, g_name + "_diffusor.nrrd")
-        g_img_diffusor_np = sitk.GetArrayFromImage(sitk.ReadImage(g_image_diffusor_fn))
+            out_diffusor_np[g_img_np > 0] = g_img_diffusor_np[g_img_np > 0]    
 
-        out_diffusor_np[g_img_np > 0] = g_img_diffusor_np[g_img_np > 0]    
+        out_img = sitk.GetImageFromArray(out_np)
+        out_img.SetSpacing(output_spacing)
+        out_img.SetOrigin(output_origin)
 
-    out_img = sitk.GetImageFromArray(out_np)
-    out_img.SetSpacing(output_spacing)
-    out_img.SetOrigin(output_origin)
+        print(out_img)
+        
+        print("Writing:", output_img_fn)
+        writer = sitk.ImageFileWriter()
+        writer.SetFileName(output_img_fn)
+        writer.UseCompressionOn()
+        writer.Execute(out_img)
 
-    print(out_img)
-    
-    print("Writing:", output_img_fn)
-    writer = sitk.ImageFileWriter()
-    writer.SetFileName(output_img_fn)
-    writer.UseCompressionOn()
-    writer.Execute(out_img)
-
-    out_diffusor_np = np.clip(out_diffusor_np, a_min=args.a_min, a_max=args.a_max)
-    out_diffusor = sitk.GetImageFromArray(out_diffusor_np)
-    out_diffusor.SetSpacing(output_spacing)
-    out_diffusor.SetOrigin(output_origin)
-    
-    print("Writing:", output_img_diffusor_fn)
-    writer = sitk.ImageFileWriter()
-    writer.SetFileName(output_img_diffusor_fn)
-    writer.UseCompressionOn()
-    writer.Execute(out_diffusor)
+        out_diffusor_np = np.clip(out_diffusor_np, a_min=args.a_min, a_max=args.a_max)
+        out_diffusor = sitk.GetImageFromArray(out_diffusor_np)
+        out_diffusor.SetSpacing(output_spacing)
+        out_diffusor.SetOrigin(output_origin)
+        
+        print("Writing:", output_img_diffusor_fn)
+        writer = sitk.ImageFileWriter()
+        writer.SetFileName(output_img_diffusor_fn)
+        writer.UseCompressionOn()
+        writer.Execute(out_diffusor)
 
 def main(args):
     
@@ -127,7 +129,7 @@ def main(args):
     df = pd.read_csv(args.csv)
 
     for idx, row in df.iterrows():
-        input_img_filename = os.path.join(args.mount_dir, str(row['img_fn']))
+        input_img_filename = os.path.join(args.mount_dir, str(row['img']))
 
         if os.path.exists(input_img_filename):
 
@@ -177,13 +179,18 @@ def main(args):
     
     df_g = df.groupby('group')
 
-    out_dir = os.path.splitext(args.csv)[0] + "_merged"
+    if args.out_dir:
+        out_dir = args.out_dir
+    else:
+        out_dir = args.mount_dir
     print("Merged images output directory:", out_dir)
 
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
     
-    with Pool(cpu_count()) as p:
+    cpu_count = args.n_proc if args.n_proc is not None else cpu_count()
+
+    with Pool(cpu_count) as p:
         p.map(MergeGroup(df_g, output_size, output_spacing, output_origin, out_dir, args.mount_dir), args.group_order)
 
     merge_groups(args, output_size, output_spacing, output_origin, out_dir)
@@ -193,31 +200,39 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description='Merge NRRD files as a single image', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     
-    parser.add_argument('--csv', type=str, help='CSV file with columns index,img,group', required=True)
-    parser.add_argument('--mount_dir', type=str, help='Mount directory', default="./")
+    parser.add_argument('--csv', type=str, help='CSV file with columns img,group - column ignore_size_info to ignore the size during compute of image space is optional', required=True)
+    parser.add_argument('--out_dir', type=str, help='Output directory', default=None)
+    parser.add_argument('--mount_dir', type=str, help='Mount directory/input directory', default="./")
     parser.add_argument('--group_order', type=str, nargs='+', help='Group order to merge. Latter values replace preceding values.', default=
         # ["lady",
-        # "uterus",
-        ["gestational",
+        #"uterus",
+        # ["gestational",
+        ["lady",
+        "lady_sacrum",
+        "lady_bladder",
+        "lady_uterus",
+        "lady_sac",
         "fetus",
         "visceral",
         "bronchus",
-        "brain",
-        #"subcorticals",
+        "brain",        
         "cardiovascular",
         "skull",
         "skeleton",
         "ribs",
         "arms",
         "legs"])
-    parser.add_argument('--min_size', type=int, help='Output size', default=512)
-    parser.add_argument('--pad', type=float, help='Pad the output', default=0.0)
+    parser.add_argument('--min_size', type=int, help='Output size', default=384)
+    parser.add_argument('--pad', type=float, help='Pad the output', default=0)
     parser.add_argument('--mean', type=str, help='Name of column to replace the labeled image, it represents the mean value', default='mean')
-    parser.add_argument('--std', type=str, help='Name of column to replace the labeled image, it represents the standard deviation value', default='std')
+    parser.add_argument('--std', type=str, help='Name of column to replace the labeled image, it represents the standard deviation value', default='stddev')
     parser.add_argument('--b_mean', type=float, help='Background mean', default=3.0)
     parser.add_argument('--b_std', type=float, help='Background std', default=3.0)
     parser.add_argument('--a_min', type=float, help='Clip minimum value', default=None)
     parser.add_argument('--a_max', type=float, help='Clip maximum value', default=None)
+    parser.add_argument('--n_proc', type=int, help='Max number of processes', default=None)
+    parser.add_argument('--ow', type=int, help='Overwrite', default=0)
+
     
     args = parser.parse_args()
 
